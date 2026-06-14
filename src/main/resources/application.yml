@@ -1,0 +1,209 @@
+server:
+  port: 8080
+
+# Actuator：指标与健康（生产应对外网关闭或加鉴权）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+
+spring:
+  application:
+    name: career-compass
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  servlet:
+    multipart:
+      # 与前端简历上传上限一致（ui/src/views/chat/index.vue 5MB）
+      max-file-size: 5MB
+      max-request-size: 6MB
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      connect-timeout: 2s
+      timeout: 2s
+
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/career_compass}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+  mapper-locations: classpath*:mapper/**/*.xml
+
+# springdoc-openapi??????
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'default'
+      paths-to-match: '/**'
+      packages-to-scan: com.coze.aicoze.controller
+# knife4j???????????????
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+# 对话平台：coze / tencent-lke。勿写「chat:」等无值键，否则会被绑定为空串，无法回退到 default。
+agent:
+  platform:
+    default: coze
+    resume-parse: coze
+    resume-optimize: coze
+
+coze:
+  api-url: "https://api.coze.cn"
+  api-token: ""
+  retry:
+    conversation-occupied:
+      enabled: true
+      max-attempts: 3
+      base-delay-ms: 300
+  chat-client:
+    bot-id: ""
+  recommendation-client:
+    bot-id: ""
+  consensus-client:
+    bot-id: ""
+  skill-client:
+    bot-id: ""
+  career-client:
+    bot-id: ""
+  NlP-client:
+    bot-id: ""
+  association-client:
+    bot-id: ""
+  collection-client:
+    bot-id: ""
+  resume-parse-client:
+    bot-id: ""
+  resume-optimize-client:
+    bot-id: ""
+  full:
+    skill-client:
+      bot-id: ""
+    career-client:
+      bot-id: ""
+
+tencent:
+  lke:
+    # SDK 认证参数（用于 GetWsToken 等官方接口）
+    secret-id: ""
+    secret-key: ""
+    region: "ap-guangzhou"
+    # 对话端 HTTP SSE V2 地址
+    chat-url: "https://wss.lke.cloud.tencent.com/adp/v2/chat"
+    chat-client:
+      app-key: ""
+    skill-client:
+      app-key: ""
+    career-client:
+      app-key: ""
+    nlp-client:
+      app-key: ""
+    association-client:
+      app-key: ""
+    collection-client:
+      app-key: ""
+    resume-parse-client:
+      app-key: ""
+    resume-optimize-client:
+      app-key: ""
+    full:
+      skill-client:
+        app-key: ""
+      career-client:
+        app-key: ""
+
+# JWT配置
+jwt:
+  secret: ""  # JWT密钥，建议在生产环境中使用更复杂的密钥
+  expiration: 86400000  # Token过期时间（毫秒），默认24小时（24*60*60*1000）
+
+# 数据加密配置
+encrypt:
+  aes-key: ""  # AES加密密钥，必须是16/24/32字节
+  enabled: false  # 是否启用传输加/解密（前端请求体 AES + 后端解密 + 响应加密）
+
+# 人才画像 -> Neo4j 知识图谱（霍兰德报告生成后批量写入）
+kg:
+  service:
+    url: ${KG_SERVICE_URL:http://kg-app:8000}
+    enabled: ${KG_ENABLED:true}
+    recommend:
+      top-k: 10
+
+# 幂等 / 应用限流（需可连 Redis；默认关闭，生产用环境变量开启）
+app:
+  redis:
+    enabled: ${APP_REDIS_ENABLED:false}
+  idempotency:
+    key-prefix: "idem:v1:"
+    ttl-seconds: 86400
+  rate-limit:
+    enabled: ${APP_RATE_LIMIT_ENABLED:false}
+    key-prefix: "rl:v1:"
+    # 任意连续 60s 内、按用户/IP 的最大请求数（滑动窗口）
+    requests-per-minute: ${APP_RATE_LIMIT_RPM:120}
+    path-patterns:
+      - /chat/send
+      - /chat/skill/answer
+      - /chat/career/answer
+      - /chat/stream
+      - /chat/feedback
+      - /full/chat/send
+      - /full/chat/skill/answer
+      - /full/chat/career/answer
+
+  # 完全版暂不开放：true 时拦截 /full/chat 与前端完全版入口；完成后改为 false 或通过环境变量 APP_FULL_VERSION_TEMPORARILY_CLOSED=false 开放
+  full-version-temporarily-closed: ${APP_FULL_VERSION_TEMPORARILY_CLOSED:true}
+
+  workflow:
+    intent:
+      ready-skill-confidence: 0.75
+      min-main-chat-turns: 2
+    main-chat:
+      min-length: 2
+      min-latin-length: 5
+      max-first-reply-chars: 220
+      semantic-gate-enabled: true
+    state:
+      key-prefix: "wf:state:v1:"
+      ttl-seconds: 86400
+
+  # 出站全局限流（单 PAT / 单应用），滑动窗口；与 Coze 官方表、腾讯模型 QPM 对齐
+  platform-rate-limit:
+    enabled: ${APP_PLATFORM_RATE_LIMIT_ENABLED:false}
+    key-prefix: "rl:out:v1:"
+    coze:
+      # 发起对话类 API：任意 1s 内次数（个人免费 20；付费 100；企业标准 200；旗舰 500）
+      init-conversation-qps: ${COZE_INIT_CONVERSATION_QPS:20}
+      # 模型 RPM：任意 60s 内次数（个人免费 300；付费 1000；企业标准 5000；旗舰 12000）
+      model-rpm: ${COZE_MODEL_RPM:300}
+    tencent:
+      # 主要模型 QPM：任意 60s 内次数（免费 300；Skill/专业等 1200，以控制台为准）
+      model-qpm: ${TENCENT_MODEL_QPM:300}
+
+#logging:
+#  level:
+#    org.springframework.beans.factory.support.DefaultListableBeanFactory: DEBUG

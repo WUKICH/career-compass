@@ -1,0 +1,795 @@
+<template>
+  <div class="chat-container">
+    <!-- 消息列表区域 -->
+    <div class="message-list" ref="messageListRef">
+      <div
+        v-for="msg in messages"
+        :key="msg.id"
+        :class="['message-bubble', msg.type === 'user' ? 'user-message' : 'bot-message']"
+      >
+        <div class="message-header">
+          <strong>{{ msg.type === 'user' ? '你' : '职业潜能评估师-阿悟' }}</strong>
+          <span class="message-time">{{ msg.timestamp }}</span>
+        </div>
+        
+        <!-- 测试题消息 - 显示可点击按钮 -->
+        <div v-if="msg.type === 'test'" class="test-button-wrapper">
+          <el-button
+            :type="userStore.isTestCompleted(msg.testType) ? 'info' : 'success'"
+            :disabled="userStore.isTestCompleted(msg.testType)"
+            size="large"
+            @click="handleTestButtonClick(msg.testType, msg.testMarkdown)"
+            class="test-button"
+            :class="{ 'test-button-disabled': userStore.isTestCompleted(msg.testType) }"
+          >
+            {{ userStore.isTestCompleted(msg.testType) 
+              ? (msg.testType === 'skill' ? '技能测试已完成' : '兴趣测试已完成')
+              : (msg.testType === 'skill' ? '开始技能测试' : '职业兴趣测试')
+            }}
+            <el-icon v-if="!userStore.isTestCompleted(msg.testType)" style="margin-left: 8px">
+              <ArrowRight />
+            </el-icon>
+            <el-icon v-else style="margin-left: 8px">
+              <Check />
+            </el-icon>
+          </el-button>
+        </div>
+        
+        <!-- 职业报告跳转按钮 -->
+        <div v-else-if="msg.type === 'report'" class="test-button-wrapper">
+          <el-button
+            :type="userStore.isTestCompleted('report') ? 'info' : 'success'"
+            :disabled="userStore.isTestCompleted('report')"
+            size="large"
+            @click="handleReportButtonClick"
+            class="test-button"
+            :class="{ 'test-button-disabled': userStore.isTestCompleted('report') }"
+          >
+            {{ userStore.isTestCompleted('report') ? '综合评价报告已查看' : '综合评价报告' }}
+            <el-icon v-if="!userStore.isTestCompleted('report')" style="margin-left: 8px">
+              <ArrowRight />
+            </el-icon>
+            <el-icon v-else style="margin-left: 8px">
+              <Check />
+            </el-icon>
+          </el-button>
+        </div>
+
+        <!-- 普通文本消息 -->
+        <div v-else class="message-content">{{ msg.content }}</div>
+      </div>
+      
+      <div v-if="messages.length === 0 && !hasInitialized" class="empty-tips">
+        还没有消息，开始对话吧！
+      </div>
+      
+      <div v-if="messages.length === 0 && hasInitialized" class="empty-tips">
+        <p>欢迎！{{ userStore.getUserInfo()?.name || '用户' }}，开始与职业助手对话吧！</p>
+        <p v-if="initialMessage" class="initial-message">{{ initialMessage }}</p>
+      </div>
+    </div>
+    
+    <!-- 控制区域 -->
+    <div class="control-panel">
+      <!-- 输入区域 -->
+      <div class="input-area">
+        <input
+          v-model="inputMessage"
+          @keydown="handleKeyPress"
+          placeholder="输入消息，按 Enter 发送..."
+          class="message-input"
+          :disabled="isLoading || !sessionId"
+        />
+        <button
+          @click="sendMessage"
+          class="send-button"
+          :disabled="!inputMessage.trim() || isLoading || !sessionId"
+        >
+          发送
+        </button>
+        <button @click="clearChat" class="clear-button">
+          清空
+        </button>
+      </div>
+      
+      <!-- 设置区域（仅保留会话初始化提示，隐藏流式开关） -->
+      <div class="settings">
+        <span v-if="!sessionId" class="warning-text">
+          ⚠️ 请先填写表单初始化会话
+        </span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
+import { ArrowRight, Check } from '@element-plus/icons-vue';
+import { chatApi, chatStreamApi } from '@/api/chat';
+import { useUserStore } from '@/stores/user';
+
+const router = useRouter();
+const userStore = useUserStore();
+
+// 响应式状态
+const messages = ref([]);
+const inputMessage = ref('');
+const messageListRef = ref(null);
+const isLoading = ref(false);
+const currentStreamingMessageId = ref(null);
+const hasInitialized = ref(false);
+const initialMessage = ref(null);
+
+// 计算属性：获取 sessionId
+const sessionId = computed(() => {
+  return userStore.getSessionId();
+});
+
+// 添加消息到列表
+const addMessage = (type, content, id = null, extra = {}) => {
+  const messageId = id || Date.now() + Math.random();
+  
+  // 如果传入了 id，先尝试查找是否已存在
+  if (id) {
+    const index = messages.value.findIndex(msg => msg.id === id);
+    if (index !== -1) {
+      // 消息已存在，更新内容
+      messages.value[index].content = content;
+      Object.assign(messages.value[index], extra);
+      // 保存聊天记录
+      userStore.saveChatMessages(messages.value);
+      scrollToBottom();
+      return messageId;
+    }
+  }
+  
+  // 消息不存在，创建新消息
+  messages.value.push({
+    id: messageId,
+    type,
+    content,
+    timestamp: new Date().toLocaleTimeString(),
+    ...extra
+  });
+  // 保存聊天记录
+  userStore.saveChatMessages(messages.value);
+  scrollToBottom();
+  return messageId;
+};
+
+// 发送消息
+const sendMessage = async () => {
+  const text = inputMessage.value.trim();
+  
+  if (!text) {
+    ElMessage.warning('请输入消息内容');
+    return;
+  }
+  
+  if (!sessionId.value) {
+    ElMessage.warning('会话未初始化，请先填写表单');
+    router.push('/form');
+    return;
+  }
+
+  inputMessage.value = '';
+  addMessage('user', text);
+ 
+  // 默认使用同步请求
+  await handleNormalRequest(text);
+};
+
+// 处理普通请求
+const handleNormalRequest = async (text) => {
+  isLoading.value = true;
+  // 先插入一条“光标/打字中”消息，让用户感知 agent 在线处理中
+  const typingMessageId = Date.now() + Math.random();
+  addMessage('bot', '▌', typingMessageId);
+  try {
+    const response = await chatApi(sessionId.value, text);
+    
+    if (response && response.code === 1 && response.data) {
+      const data = response.data;
+      
+      // 添加聊天回复
+      if (data.content) {
+        // 检查是否包含 [CHAT_END] 标记
+        const content = data.content;
+        
+        // 移除 [CHAT_END] 标记后显示内容
+        const displayContent = content.replace(/\[CHAT_END\]/g, '').trim();
+        // 用真实内容替换“打字中”光标
+        messages.value = messages.value.filter(m => m.id !== typingMessageId);
+        if (displayContent) {
+          addMessage('bot', displayContent);
+        }
+      }
+      
+      // 检查是否有测试题需要展示（只有在测试未完成时才显示）
+      // 支持 skillTestMarkdown 或 skillTestJson 字段
+      if (data.skillTestReady && (data.skillTestMarkdown || data.skillTestJson)) {
+        // 检查技能测试是否已完成，如果已完成则不显示
+        if (!userStore.isTestCompleted('skill')) {
+        let testData = data.skillTestMarkdown || data.skillTestJson;
+        // 如果是对象，序列化为JSON字符串；如果已经是字符串，直接使用
+        if (typeof testData === 'object') {
+          testData = JSON.stringify(testData);
+        }
+        addMessage('test', '', null, {
+          testType: 'skill',
+          testMarkdown: testData
+        });
+        }
+      } else if (data.careerTestReady && (data.careerTestMarkdown || data.careerTestJson)) {
+        // 检查兴趣测试是否已完成，如果已完成则不显示
+        if (!userStore.isTestCompleted('career')) {
+        let testData = data.careerTestMarkdown || data.careerTestJson;
+        // 如果是对象，序列化为JSON字符串；如果已经是字符串，直接使用
+        if (typeof testData === 'object') {
+          testData = JSON.stringify(testData);
+        }
+        addMessage('test', '', null, {
+          testType: 'career',
+          testMarkdown: testData
+        });
+        }
+      } else if (data.careerAssessmentReport) {
+        // 最终职业综合评估报告，保存并给出按钮由用户点击跳转
+        userStore.setCareerAssessmentReport(data.careerAssessmentReport);
+        // 如果还在显示“打字中”，移除它
+        messages.value = messages.value.filter(m => m.id !== typingMessageId);
+        addMessage('bot', '已生成综合评价报告，请点击下方按钮查看。');
+        nextTick(() => {
+          addMessage('report', '');
+        });
+      } else {
+        // 没有 content / 没有测试 / 没有报告，移除“打字中”
+        messages.value = messages.value.filter(m => m.id !== typingMessageId);
+      }
+    } else {
+      messages.value = messages.value.filter(m => m.id !== typingMessageId);
+      addMessage('bot', response?.msg || '收到空回复');
+    }
+  } catch (error) {
+    console.error('普通请求失败:', error);
+    messages.value = messages.value.filter(m => m.id !== typingMessageId);
+    addMessage('bot', `请求失败: ${error.message}`);
+    ElMessage.error('消息发送失败');
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+// 处理流式请求
+const handleStreamRequest = async (text) => {
+  const botMessageId = Date.now() + Math.random();
+  currentStreamingMessageId.value = botMessageId;
+  addMessage('bot', '▌', botMessageId);
+
+  try {
+    const response = await chatStreamApi(sessionId.value, text);
+    
+    if (!response.body) {
+      throw new Error('响应中没有可读的流');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let accumulatedContent = '';
+    let currentEvent = null;
+    let hasChatEndDetected = false; // 标记是否检测到 [CHAT_END]
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          // 流结束，清理光标并检查 [CHAT_END] 标记
+          const finalIndex = messages.value.findIndex(msg => msg.id === botMessageId);
+          if (finalIndex !== -1) {
+            // 最终检查是否包含 [CHAT_END] 标记（使用完整的 accumulatedContent）
+            const displayContent = accumulatedContent.replace(/\[CHAT_END\]/g, '').trim();
+            messages.value[finalIndex].content = displayContent;
+          }
+          currentStreamingMessageId.value = null;
+          break;
+        }
+
+        // 解码数据并添加到缓冲区
+        buffer += decoder.decode(value, { stream: true });
+        
+        // 按行分割处理 SSE 格式
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // 保留最后一个不完整的行
+        
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          
+          // SSE 格式: event: xxx 或 data: xxx
+          if (trimmedLine.startsWith('event:')) {
+            const eventValue = trimmedLine.substring(6).trim();
+            currentEvent = eventValue;
+          } else if (trimmedLine.startsWith('data:')) {
+            const currentData = trimmedLine.substring(5).trim();
+            
+            // 处理数据：如果是 message 事件，立即更新显示
+            if (currentEvent === 'message' && currentData) {
+              if (currentData === '[DONE]') {
+                const finalIndex = messages.value.findIndex(msg => msg.id === botMessageId);
+                if (finalIndex !== -1) {
+                  // 检查是否包含 [CHAT_END] 标记
+                  const displayContent = accumulatedContent.replace(/\[CHAT_END\]/g, '').trim();
+                  messages.value[finalIndex].content = displayContent;
+                }
+                currentStreamingMessageId.value = null;
+                return;
+              } else {
+                accumulatedContent += currentData;
+                // 检查是否包含 [CHAT_END] 标记（可能被分割，需要检查完整内容）
+                if (accumulatedContent.includes('[CHAT_END]')) {
+                  hasChatEndDetected = true;
+                }
+                // 实时移除 [CHAT_END] 标记，避免在流式显示时显示出来
+                const displayContent = accumulatedContent.replace(/\[CHAT_END\]/g, '');
+                const index = messages.value.findIndex(msg => msg.id === botMessageId);
+                if (index !== -1) {
+                  messages.value[index].content = displayContent + '▌';
+                  scrollToBottom();
+                }
+              }
+            } else if (currentEvent === 'complete' && currentData === '[DONE]') {
+              const finalIndex = messages.value.findIndex(msg => msg.id === botMessageId);
+              if (finalIndex !== -1) {
+                // 检查是否包含 [CHAT_END] 标记
+                const displayContent = accumulatedContent.replace(/\[CHAT_END\]/g, '').trim();
+                messages.value[finalIndex].content = displayContent;
+              }
+              currentStreamingMessageId.value = null;
+              return;
+            } else if (!currentEvent && currentData) {
+              if (currentData !== '[DONE]') {
+                accumulatedContent += currentData;
+                // 检查是否包含 [CHAT_END] 标记（可能被分割，需要检查完整内容）
+                if (accumulatedContent.includes('[CHAT_END]')) {
+                  hasChatEndDetected = true;
+                }
+                // 实时移除 [CHAT_END] 标记，避免在流式显示时显示出来
+                const displayContent = accumulatedContent.replace(/\[CHAT_END\]/g, '');
+                const index = messages.value.findIndex(msg => msg.id === botMessageId);
+                if (index !== -1) {
+                  messages.value[index].content = displayContent + '▌';
+                  scrollToBottom();
+                }
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (error) {
+    console.error('流式请求失败:', error);
+    const errorIndex = messages.value.findIndex(msg => msg.id === botMessageId);
+    if (errorIndex !== -1) {
+      messages.value[errorIndex].content = `请求失败: ${error.message}`;
+    }
+    currentStreamingMessageId.value = null;
+    ElMessage.error('流式连接出错: ' + error.message);
+  }
+};
+
+// 处理测试按钮点击
+const handleTestButtonClick = (testType, testMarkdown) => {
+  // 检查测试是否已完成
+  if (userStore.isTestCompleted(testType)) {
+    ElMessage.warning('该测试已经完成，无法重复提交');
+    return;
+  }
+  
+  if (!testMarkdown) {
+    ElMessage.error('未找到测试题目，请重新触发测试');
+    return;
+  }
+  
+  // 将 markdown 通过 query 参数传递
+  router.push({
+    path: `/test/${testType}`,
+    query: {
+      markdown: encodeURIComponent(testMarkdown)
+    }
+  });
+};
+
+// 清空聊天记录
+const clearChat = () => {
+  messages.value = [];
+  currentStreamingMessageId.value = null;
+  // 同步清空 store 中的聊天记录
+  userStore.clearChatMessages();
+  ElMessage.info('已清空对话');
+};
+
+// 处理键盘回车
+const handleKeyPress = (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    if (!isLoading.value) {
+      sendMessage();
+    }
+  }
+};
+
+// 滚动到底部
+const scrollToBottom = () => {
+  nextTick(() => {
+    if (messageListRef.value) {
+      messageListRef.value.scrollTop = messageListRef.value.scrollHeight;
+    }
+  });
+};
+
+// 显示新消息的方法
+const showNewMessage = (message) => {
+  if (message) {
+    addMessage('bot', message);
+    scrollToBottom();
+  }
+};
+
+const handleReportButtonClick = () => {
+  // 检查报告是否已查看
+  if (userStore.isTestCompleted('report')) {
+    ElMessage.warning('报告已查看，无法重复打开');
+    return;
+  }
+  // 标记报告为已查看
+  userStore.markTestAsCompleted('report');
+  router.push('/report/career');
+};
+
+// 页面加载时初始化
+onMounted(() => {
+  // 检查是否有 sessionId
+  if (sessionId.value) {
+    hasInitialized.value = true;
+    
+    // 恢复聊天记录
+    const storedMessages = userStore.getChatMessages();
+    if (storedMessages && storedMessages.length > 0) {
+      messages.value = storedMessages;
+    }
+    
+    // 检查是否有初始消息
+    const storedMessage = userStore.getInitialMessage();
+    if (storedMessage) {
+      initialMessage.value = storedMessage;
+      // 只有在没有聊天记录时才显示初始消息，避免重复
+      if (messages.value.length === 0) {
+        showNewMessage(storedMessage);
+      }
+      // 清除已显示的初始消息
+      userStore.clearInitialMessage();
+    }
+    
+    // 检查是否有待显示的职业测试（从技能测试提交后返回，或职业测试提交后返回）
+    const pendingCareerTest = userStore.getPendingCareerTest();
+    if (pendingCareerTest) {
+      // 如果有 testMarkdown，说明是技能测试提交后返回的职业测试题目
+      if (pendingCareerTest.testMarkdown) {
+        // 先添加文本消息（如果有 content）
+        if (pendingCareerTest.content) {
+          addMessage('bot', pendingCareerTest.content);
+        }
+        
+        // 再添加职业测试按钮消息
+        let testData = pendingCareerTest.testMarkdown;
+        // 如果是对象，序列化为JSON字符串；如果已经是字符串，直接使用
+        if (typeof testData === 'object') {
+          testData = JSON.stringify(testData);
+        }
+        addMessage('test', '', null, {
+          testType: 'career',
+          testMarkdown: testData
+        });
+      } 
+      // 如果只有 content，说明是职业测试提交后返回的结果
+      else if (pendingCareerTest.content) {
+        // 检查是否包含 [CHAT_END] 标记（可能已经在测试页面处理过，但这里再检查一次确保）
+        const content = pendingCareerTest.content;
+        const hasChatEnd = content.includes('[CHAT_END]') || pendingCareerTest.hasChatEnd;
+        const displayContent = content.replace(/\[CHAT_END\]/g, '').trim();
+        
+        if (displayContent) {
+          addMessage('bot', displayContent);
+        }
+      }
+      
+      // 清除待显示的职业测试数据
+      userStore.clearPendingCareerTest();
+    }
+  } else {
+    // 没有 sessionId，检查是否是第一次进入页面
+    if (!userStore.hasShownWelcomeMessage()) {
+      // 第一次进入，显示欢迎消息
+      const welcomeMessage = '欢迎您的到来，我是职业潜能评估师-阿悟，我将通过对话方式帮助您进行职业技能和职业兴趣评估，首先我怀着好奇和兴趣了解关于您所有基本信息，并进行进一步测试，请您点击右上角的【输入基础信息】按钮，进行下一步的操作';
+      addMessage('bot', welcomeMessage);
+      // 标记已显示欢迎消息
+      userStore.markWelcomeMessageShown();
+      scrollToBottom();
+    } else {
+      // 不是第一次进入，但也没有 sessionId，提示用户去填写表单
+    ElMessage.warning('请先填写表单初始化会话');
+    }
+  }
+  
+  scrollToBottom();
+});
+
+// 组件卸载前保存聊天记录
+onBeforeUnmount(() => {
+  if (sessionId.value && messages.value.length > 0) {
+    userStore.saveChatMessages(messages.value);
+  }
+});
+
+// 监听 store 中的聊天记录变化（用于在其它地方清理聊天记录时同步到当前页面）
+watch(
+  () => userStore.getChatMessages(),
+  (newMessages) => {
+    messages.value = newMessages || [];
+  }
+);
+
+// 监听 store 中的 initialMessage 变化（用于编辑模式下显示更新后的消息）
+// 使用 immediate: false 避免在组件挂载时立即触发
+watch(
+  () => userStore.initialMessage,
+  (newMessage, oldMessage) => {
+    // 只有在已初始化、有新消息、且消息发生变化时才显示
+    if (newMessage && hasInitialized.value && newMessage !== oldMessage) {
+      showNewMessage(newMessage);
+      // 清除已显示的消息
+      userStore.clearInitialMessage();
+    }
+  },
+  { immediate: false }
+);
+</script>
+
+<style scoped>
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg-card);
+}
+
+/* 消息列表区域 - 自适应 */
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--bg-page);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.empty-tips {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px 20px;
+  font-size: 14px;
+}
+
+.initial-message {
+  margin-top: 16px;
+  padding: 16px;
+  background-color: #e8f4fd;
+  border-radius: var(--radius-md);
+  color: #409eff;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.message-bubble {
+  max-width: 70%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  word-wrap: break-word;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.message-time {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.message-content {
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-size: 14px;
+  margin-right: 50px;
+}
+
+.user-message {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--indigo) 100%);
+  color: white;
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.bot-message {
+  align-self: flex-start;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-bottom-left-radius: var(--radius-sm);
+}
+
+.test-button-wrapper {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 16px 0;
+}
+
+.test-button {
+  font-size: 16px;
+  padding: 12px 32px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  transition: all 0.3s;
+}
+
+.test-button:hover:not(.test-button-disabled):not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg), 0 4px 12px var(--primary-glow);
+}
+
+.test-button-disabled,
+.test-button:disabled {
+  background-color: #c0c4cc !important;
+  border-color: #c0c4cc !important;
+  color: #909399 !important;
+  cursor: not-allowed !important;
+  opacity: 0.6;
+  box-shadow: none !important;
+}
+
+.test-button-disabled:hover,
+.test-button:disabled:hover {
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* 控制区域 */
+.control-panel {
+  padding: 16px;
+  background: var(--bg-card);
+  border-top: 1px solid #e0e0e0;
+  flex-shrink: 0;
+}
+
+.input-area {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.message-input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.message-input:focus {
+  border-color: var(--primary);
+}
+
+.message-input:disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.send-button, .clear-button {
+  padding: 10px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  white-space: nowrap;
+}
+
+.send-button {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--indigo) 100%);
+  color: white;
+}
+
+.send-button:hover:not(:disabled) {
+  background-color: #0056CC;
+}
+
+.send-button:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+}
+
+.clear-button {
+  background-color: #ff3b30;
+  color: white;
+}
+
+.clear-button:hover {
+  background-color: #d70015;
+}
+
+/* 设置区域 */
+.settings {
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.streaming-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.streaming-toggle input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.warning-text {
+  font-size: 12px;
+  color: #f56c6c;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .message-bubble {
+    max-width: 85%;
+  }
+  
+  .input-area {
+    flex-wrap: wrap;
+  }
+  
+  .send-button, .clear-button {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+}
+</style>

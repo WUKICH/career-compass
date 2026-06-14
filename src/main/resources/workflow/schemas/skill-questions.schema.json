@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["题目列表"],
+  "properties": {
+    "题目列表": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["类型", "核心技能", "题干"],
+        "properties": {
+          "类型": { "type": "string", "enum": ["选择题", "主观题"] },
+          "核心技能": { "type": "string" },
+          "题干": { "type": "string" },
+          "要求": { "type": "string" },
+          "选项": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "required": ["key", "text"],
+              "properties": {
+                "key": { "type": "string", "enum": ["A", "B", "C", "D"] },
+                "text": { "type": "string" }
+              }
+            }
+          },
+          "正确答案": { "type": "string", "enum": ["A", "B", "C", "D"] }
+        }
+      }
+    },
+    "questions": {
+      "description": "兼容英文键别名",
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    }
+  },
+  "additionalProperties": false
+}

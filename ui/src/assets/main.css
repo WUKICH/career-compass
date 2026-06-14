@@ -1,0 +1,33 @@
+@import './base.css';
+
+/* 整页一屏布局：隐藏窗口级滚动条，由各业务区（如 el-main、.page）自行 overflow-y: auto。
+   若需要恢复浏览器窗口右侧滚动条，可改为 body { overflow-y: auto; }（可能影响聊天等全屏页）。 */
+html, body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  font-weight: normal;
+}
+
+a,
+.green {
+  text-decoration: none;
+  color: hsla(160, 100%, 37%, 1);
+  transition: 0.4s;
+  padding: 3px;
+}
+
+@media (hover: hover) {
+  a:hover {
+    background-color: hsla(160, 100%, 37%, 0.2);
+  }
+}

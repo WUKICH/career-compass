@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "targetJob": { "type": "string" },
+    "targetCity": { "type": "string" },
+    "expectedSalary": { "type": "string" },
+    "skillAssessments": { "type": "array" },
+    "careerInterestResult": { "type": "object" },
+    "recommendedPositions": { "type": "array" },
+    "resumeOptimization": { "type": "object" }
+  },
+  "additionalProperties": true
+}

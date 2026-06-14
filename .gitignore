@@ -1,0 +1,59 @@
+# 本地私有（个人笔记、内部文档、临时附件）
+_local/*
+
+# 敏感配置
+application-local.yml
+application-prod.yml
+**/application-*-local.yml
+!application-prod.yml.example
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 日志
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 构建
+target/
+build/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE / 编辑器
+.cursor
+.idea
+*.iws
+*.iml
+*.ipr
+.vscode/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# 未启用 / 实验代码（暂不入库）
+src/main/java/com/coze/aicoze/chatExample
+src/main/java/com/coze/aicoze/config/VectorStoreConfig.java
+src/main/java/com/coze/aicoze/rag
+src/main/resources/document
+src/test
+AGENTS.md
